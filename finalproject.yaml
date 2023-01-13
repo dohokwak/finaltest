@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finalproject
+  labels:
+    app: finalproject
+  namespace: finalproject
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: finalproject
+  template:
+    metadata:
+      labels:
+        app: finalproject
+    spec:
+      containers:
+      - name: finalproject
+        image: saaaaangho/ubuntu:apache2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: finalproject
+  namespace: finalproject
+  labels:
+    app: finalproject
+spec:
+  selector:
+    app: finalproject
+  type: LoadBalancer
+  ports:
+   -  protocol: TCP
+      port: 80
+      targetPort: 80
