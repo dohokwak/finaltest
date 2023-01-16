@@ -1,85 +1,41 @@
-podTemplate(label: 'docker-build',
-  containers: [
-    containerTemplate(
-      name: 'docker',
-      image: 'docker',
-      command: 'cat',
-      ttyEnabled: true
-    ),
-    containerTemplate(
-      name: 'argo',
-      image: 'argoproj/argo-cd-ci-builder:latest',
-      command: 'cat',
-      ttyEnabled: true
-    ),
-  ],
-  volumes: [ 
-    hostPathVolume(mountPath: '/var/run/docker.sock', hostPath: '/var/run/docker.sock'), 
-  ]
-) {
-    node('docker-build') {
-        def dockerHubCred = "dockerhub_cred"
-        def appImage
-        
-        stage('Checkout'){
-            container('argo'){
-                checkout scm
-            }
-        }
-        
-        stage('Build'){
-            container('docker'){
-                script {
-                    appImage = docker.build("saaaaangho/node-finaltest")
-                }
-            }
-        }
-        
-        stage('Test'){
-            container('docker'){
-                script {
-                    appImage.inside {
-                        sh 'npm install'
-                        sh 'npm test'
-                    }
-                }
-            }
-        }
+REGION = 'ap-northeast-2'
+EKS_API = 'https://20AAFFB498CB4ACE62955C0AB9BCE7AF.gr7.ap-northeast-2.eks.amazonaws.com'
+EKS_CLUSTER_NAME='finalproject'
+EKS_NAMESPACE='default'
+EKS_JENKINS_CREDENTIAL_ID='kubectl-deploy-credentials'
+ECR_PATH = '330406863854.dkr.ecr.ap-northeast-2.amazonaws.com/finalproject'
+ECR_IMAGE = 'jenkins-ecr'
+AWS_CREDENTIAL_ID = 'jenkins-aws-credentials'
 
-        stage('Push'){
-            container('docker'){
-                script {
-                    docker.withRegistry('https://registry.hub.docker.com', dockerHubCred){
-                        appImage.push("${env.BUILD_NUMBER}")
-                        appImage.push("latest")
-                    }
-                }
-            }
+node {
+    stage('Clone Repository'){
+        checkout scm
+    }
+    stage('Docker Build'){
+        // Docker Build
+        docker.withRegistry("https://${ECR_PATH}", "ecr:${REGION}:${AWS_CREDENTIAL_ID}"){
+            image = docker.build("${ECR_PATH}/${ECR_IMAGE}", "--network=host --no-cache .")
         }
-
-        stage('Deploy'){
-            container('argo'){
-                checkout([$class: 'GitSCM',
-                        branches: [[name: '*/main' ]],
-                        extensions: scm.extensions,
-                        userRemoteConfigs: [[
-                            url: 'git@github.com:dohokwak/finaltest.git',
-                            credentialsId: 'jenkins-ssh-private',
-                        ]]
-                ])
-                sshagent(credentials: ['jenkins-ssh-private']){
-                    sh("""
-                        #!/usr/bin/env bash
-                        set +x
-                        export GIT_SSH_COMMAND="ssh -oStrictHostKeyChecking=no"
-                        git config --global user.email "kwakdoho@gmail.com"
-                        git checkout main
-                        cd env/dev && kustomize edit set image saaaaangho/node-finaltest:${BUILD_NUMBER}
-                        git commit -a -m "updated the image tag"
-                        git push
-                    """)
-                }
-            }
+    }
+    stage('Push to ECR'){
+        docker.withRegistry("https://${ECR_PATH}", "ecr:${REGION}:${AWS_CREDENTIAL_ID}"){
+            image.push("v${env.BUILD_NUMBER}")
         }
-    } 
+    }
+    stage('CleanUp Images'){
+        sh"""
+        docker rmi ${ECR_PATH}/${ECR_IMAGE}:v$BUILD_NUMBER
+        docker rmi ${ECR_PATH}/${ECR_IMAGE}:latest
+        """
+    }
+    stage('Deploy to K8S'){
+        withKubeConfig([credentialsId: "kubectl-deploy-credentials",
+                        serverUrl: "${EKS_API}",
+                        clusterName: "${EKS_CLUSTER_NAME}"]){
+            sh "sed 's/IMAGE_VERSION/v${env.BUILD_ID}/g' finalproject_service.yaml > output.yaml"
+            sh "aws eks --region ${REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}"
+            sh "kubectl apply -f output.yaml"
+            sh "rm output.yaml"
+        }
+    }
 }
